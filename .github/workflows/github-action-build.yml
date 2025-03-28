@@ -102,36 +102,42 @@ jobs:
             --keychain "${KEYCHAIN}"
 
           echo "🔍 Submitting to Apple notarization service..."
+
+          # 提交公证，并捕获输出
+          SUBMIT_RESULT=$(mktemp)
           xcrun notarytool submit "${SIGNED_DMG}" \
             --keychain-profile "Pubinfo" \
             --keychain "${KEYCHAIN}" \
-            --output "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json" \
-            --wait --timeout 2h || {
+            --wait --timeout 2h > "$SUBMIT_RESULT" || {
               echo "❌ Notarization submission failed!"
-              cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
+              cat "$SUBMIT_RESULT"
               exit 1
             }
 
-          echo "✅ Notarization submission completed."
+          # 打印返回内容
+          echo "✅ Notarization submission result:"
+          cat "$SUBMIT_RESULT"
 
           # 提取 Submission ID
-          SUBMISSION_ID=$(cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json" | grep '"id"' | head -n 1 | sed -E 's/[^"]*"id": ?"([^"]+)".*/\1/')
+          SUBMISSION_ID=$(grep -E '"id" *:' "$SUBMIT_RESULT" | head -n1 | sed -E 's/[^"]*"id": ?"([^"]+)".*/\1/')
 
           if [ -z "$SUBMISSION_ID" ]; then
             echo "❌ Failed to extract submission ID."
-            cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
             exit 1
           fi
 
-          echo "📦 Submission ID: ${SUBMISSION_ID}"
+          echo "📦 Submission ID: $SUBMISSION_ID"
 
-          # 下载 log
-          xcrun notarytool log "${SUBMISSION_ID}" \
+          # 保存为文件用于上传
+          cp "$SUBMIT_RESULT" "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
+
+          # 拉取日志
+          xcrun notarytool log "$SUBMISSION_ID" \
             --keychain-profile "Pubinfo" \
             --keychain "${KEYCHAIN}" \
             --output "${SIGNED_DOTAPP_DIR}/notarization-log.json"
 
-          # Staple
+          # Staple 票据
           xcrun stapler staple "${SIGNED_DMG}" || echo "⚠️ Staple failed — likely rejected"
 
       - name: Create ZIP App Archive
