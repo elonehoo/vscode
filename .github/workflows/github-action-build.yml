@@ -37,7 +37,6 @@ jobs:
 
       - name: Build App
         run: |
-          sudo npm run buildreact
           sudo npm run gulp vscode-darwin-${{ matrix.arch }}-min
 
       - name: Setup Working Directories
