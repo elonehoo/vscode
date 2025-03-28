@@ -1,4 +1,4 @@
-name: Test windows Build
+name: Test Mac Build
 
 on:
   push:
@@ -7,15 +7,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows-x86:
-    runs-on: windows-latest
+  build-macos:
+    runs-on: macos-latest-large
+    strategy:
+      matrix:
+        arch: [x64]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -24,106 +24,150 @@ jobs:
 
       - name: Install dependencies
         run: |
+          npm config set //github.com/:_authToken=${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          npm config set //api.github.com/:_authToken=${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          npm config set //npm.pkg.github.com/:_authToken=${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          npm config set @microsoft:registry https://npm.pkg.github.com
+          npm config set @vscode:registry https://npm.pkg.github.com
           npm config set fetch-timeout 300000
           npm config set fetch-retry-mintimeout 20000
           npm config set fetch-retry-maxtimeout 120000
-          # 关闭npm fund和audit消息减少输出
-          npm config set fund false
-          npm config set audit false
-          npm config set loglevel warn
-          # 安装全局依赖
-          npm install -g node-gyp@10.1.0
-          npm install -g gulp-cli
-          npm install -g tailwindcss@3.4.17
-        shell: pwsh
+          sudo npm install
+          sudo npm install -g node-gyp gulp-cli create-dmg
 
-      - name: Install dev
+      - name: Build App
         run: |
-          npm install
-        shell: pwsh
+          sudo npm run buildreact
+          sudo npm run gulp vscode-darwin-${{ matrix.arch }}-min
 
-      - name: Build
+      - name: Setup Working Directories
         run: |
-          npm run gulp vscode-win32-x64-min
-        shell: pwsh
+          WORKING_DIR="${{ runner.temp }}/PubinfoSign-${{ matrix.arch }}"
+          KEYCHAIN_DIR="${WORKING_DIR}/1_Keychain"
+          SIGN_DIR="${WORKING_DIR}/2_Signed"
+          mkdir -p "${WORKING_DIR}" "${KEYCHAIN_DIR}" "${SIGN_DIR}"
+          cp -Rp "$(pwd)/../VSCode-darwin-${{ matrix.arch }}" "${SIGN_DIR}"
+          echo "WORKING_DIR=${WORKING_DIR}" >> $GITHUB_ENV
+          echo "KEYCHAIN_DIR=${KEYCHAIN_DIR}" >> $GITHUB_ENV
+          echo "SIGN_DIR=${SIGN_DIR}" >> $GITHUB_ENV
+          echo "SIGNED_DOTAPP_DIR=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "SIGNED_DOTAPP=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}/Pubinfo - IDE.app" >> $GITHUB_ENV
 
-      - name: Package
+      - name: Import Certificate
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: "temporary-password"
         run: |
-          mkdir -p .build/win32-x64
-          Compress-Archive -Path ..\VSCode-win32-x64\* -DestinationPath .build\win32-x64\code-win32-x64.zip
-        shell: pwsh
+          KEYCHAIN="${KEYCHAIN_DIR}/buildagent.keychain"
+          echo "KEYCHAIN=${KEYCHAIN}" >> $GITHUB_ENV
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          echo "${P12_BASE64}" | base64 --decode > "${KEYCHAIN_DIR}/certificate.p12"
+          security import "${KEYCHAIN_DIR}/certificate.p12" -k "${KEYCHAIN}" -P "${P12_PASSWORD}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}" > /dev/null
+          security list-keychains -d user -s "${KEYCHAIN}" $(security list-keychains -d user | sed s/\"//g)
 
-      - name: Generate checksum
+      - name: Sign App
+        env:
+          CODESIGN_IDENTITY: "Developer ID Application: nihang Dai (DSC3A556Y5)"
+          VSCODE_ARCH: ${{ matrix.arch }}
         run: |
-          cd .build/win32-x64
-          $hash = Get-FileHash -Algorithm SHA256 code-win32-x64.zip
-          $hash.Hash | Out-File -Encoding ascii code-win32-x64.zip.sha256
-        shell: pwsh
+          export AGENT_TEMPDIRECTORY="${KEYCHAIN_DIR}"
+          cd $(pwd)/build/darwin
+          node sign.js "${SIGN_DIR}"
+          codesign --verify --deep --strict --verbose=4 "${SIGNED_DOTAPP}"
+          spctl --assess --type execute --verbose=4 "${SIGNED_DOTAPP}" || echo "✅ Not yet notarized, skipping spctl error"
 
-      - name: Upload artifacts
+      - name: Create DMG
+        run: |
+          cd "${SIGNED_DOTAPP_DIR}"
+          npx create-dmg --volname "Pubinfo IDE Installer" "${SIGNED_DOTAPP}" . || true
+          GENERATED_DMG=$(ls *.dmg)
+          mv "${GENERATED_DMG}" "Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg"
+          codesign --verify --verbose=4 "Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg"
+          echo "SIGNED_DMG=${SIGNED_DOTAPP_DIR}/Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg" >> $GITHUB_ENV
+
+      - name: Notarize App
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_PWD }}
+          KEYCHAIN_PASSWORD: "temporary-password"
+        run: |
+          xcrun notarytool store-credentials "Pubinfo" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${TEAM_ID}" \
+            --password "${APP_PASSWORD}" \
+            --keychain "${KEYCHAIN}"
+
+          echo "🔍 Submitting to Apple notarization service..."
+          xcrun notarytool submit "${SIGNED_DMG}" \
+            --keychain-profile "Pubinfo" \
+            --keychain "${KEYCHAIN}" \
+            --output "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json" \
+            --wait --timeout 2h || {
+              echo "❌ Notarization submission failed!"
+              cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
+              exit 1
+            }
+
+          echo "✅ Notarization submission completed."
+
+          # 提取 Submission ID
+          SUBMISSION_ID=$(cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json" | grep '"id"' | head -n 1 | sed -E 's/[^"]*"id": ?"([^"]+)".*/\1/')
+
+          if [ -z "$SUBMISSION_ID" ]; then
+            echo "❌ Failed to extract submission ID."
+            cat "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
+            exit 1
+          fi
+
+          echo "📦 Submission ID: ${SUBMISSION_ID}"
+
+          # 下载 log
+          xcrun notarytool log "${SUBMISSION_ID}" \
+            --keychain-profile "Pubinfo" \
+            --keychain "${KEYCHAIN}" \
+            --output "${SIGNED_DOTAPP_DIR}/notarization-log.json"
+
+          # Staple
+          xcrun stapler staple "${SIGNED_DMG}" || echo "⚠️ Staple failed — likely rejected"
+
+      - name: Create ZIP App Archive
+        run: |
+          cd "${SIGNED_DOTAPP_DIR}"
+          PUBINFOAPP=$(basename "${SIGNED_DOTAPP}")
+          ditto -c -k --sequesterRsrc --keepParent "${PUBINFOAPP}" "Pubinfo-RawApp-darwin-${{ matrix.arch }}.zip"
+
+      - name: Generate Hash File
+        run: |
+          cd "${SIGNED_DOTAPP_DIR}"
+          SHA1=$(shasum -a 1 "Pubinfo-RawApp-darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1)
+          SHA256=$(shasum -a 256 "Pubinfo-RawApp-darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1)
+          TIMESTAMP=$(date +%s)
+          cat > "Pubinfo-UpdJSON-darwin-${{ matrix.arch }}.json" << EOF
+          {
+              "sha256hash": "${SHA256}",
+              "hash": "${SHA1}",
+              "timestamp": ${TIMESTAMP}
+          }
+          EOF
+
+      - name: Generate checksum for DMG
+        run: |
+          cd "${SIGNED_DOTAPP_DIR}"
+          shasum -a 256 "Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg" > "Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg.sha256"
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: code-win32-x64
+          name: pubinfo-darwin-${{ matrix.arch }}-all
           path: |
-            .build/win32-x64/code-win32-x64.zip
-            .build/win32-x64/code-win32-x64.zip.sha256
-  build-windows-arm64:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-
-      - name: Install dependencies
-        run: |
-          npm config set fetch-timeout 300000
-          npm config set fetch-retry-mintimeout 20000
-          npm config set fetch-retry-maxtimeout 120000
-          # 关闭npm fund和audit消息减少输出
-          npm config set fund false
-          npm config set audit false
-          npm config set loglevel warn
-          # 安装全局依赖
-          npm install -g node-gyp@10.1.0
-          npm install -g gulp-cli
-          npm install -g tailwindcss@3.4.17
-        shell: pwsh
-
-      - name: Install dev
-        run: |
-          npm install
-        shell: pwsh
-
-      - name: Build
-        run: |
-          npm run gulp vscode-win32-arm64-min
-
-      - name: Package
-        run: |
-          mkdir -p .build/win32-arm64
-          Compress-Archive -Path ..\VSCode-win32-arm64\* -DestinationPath .build\win32-arm64\code-win32-arm64.zip
-        shell: pwsh
-
-      - name: Generate checksum
-        run: |
-          cd .build/win32-arm64
-          $hash = Get-FileHash -Algorithm SHA256 code-win32-arm64.zip
-          $hash.Hash | Out-File -Encoding ascii code-win32-arm64.zip.sha256
-        shell: pwsh
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-win32-arm64
-          path: |
-            .build/win32-arm64/code-win32-arm64.zip
-            .build/win32-arm64/code-win32-arm64.zip.sha256
-
+            ${{ env.SIGNED_DMG }}
+            ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-RawApp-darwin-${{ matrix.arch }}.zip
+            ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg.sha256
+            ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-UpdJSON-darwin-${{ matrix.arch }}.json
+            ${{ env.SIGNED_DOTAPP_DIR }}/notarization-log.json
+            ${{ env.SIGNED_DOTAPP_DIR }}/notarization-submit-output.txt
