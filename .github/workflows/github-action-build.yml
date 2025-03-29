@@ -32,7 +32,6 @@ jobs:
 
       - name: Build App
         run: |
-          sudo npm run buildreact
           sudo npm run gulp vscode-darwin-${{ matrix.arch }}-min
 
       - name: Setup Working Directories
@@ -46,7 +45,7 @@ jobs:
           echo "KEYCHAIN_DIR=${KEYCHAIN_DIR}" >> $GITHUB_ENV
           echo "SIGN_DIR=${SIGN_DIR}" >> $GITHUB_ENV
           echo "SIGNED_DOTAPP_DIR=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "SIGNED_DOTAPP=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}/Pubinfo - IDE.app" >> $GITHUB_ENV
+          echo "SIGNED_DOTAPP=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}/Code - OSS.app" >> $GITHUB_ENV
 
       - name: Import Certificate
         env:
