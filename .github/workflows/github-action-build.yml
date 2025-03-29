@@ -124,13 +124,14 @@ jobs:
 
           cp "$SUBMIT_RESULT" "${SIGNED_DOTAPP_DIR}/notarization-submit-output.txt"
 
+          # 保存日志（兼容老版本）
           xcrun notarytool log "$SUBMISSION_ID" \
             --keychain-profile "Pubinfo" \
-            --keychain "${KEYCHAIN}" \
-            --output "${SIGNED_DOTAPP_DIR}/notarization-log.json"
+            --keychain "${KEYCHAIN}" > "${SIGNED_DOTAPP_DIR}/notarization-log.txt"
 
+          # 尝试 staple
           xcrun stapler staple "${SIGNED_DMG}" || echo "⚠️ Staple failed — likely rejected"
-
+          
       - name: Create ZIP App Archive
         run: |
           cd "${SIGNED_DOTAPP_DIR}"
@@ -165,5 +166,5 @@ jobs:
             ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-RawApp-darwin-${{ matrix.arch }}.zip
             ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-Installer-darwin-${{ matrix.arch }}.dmg.sha256
             ${{ env.SIGNED_DOTAPP_DIR }}/Pubinfo-UpdJSON-darwin-${{ matrix.arch }}.json
-            ${{ env.SIGNED_DOTAPP_DIR }}/notarization-log.json
+            ${{ env.SIGNED_DOTAPP_DIR }}/notarization-log.txt
             ${{ env.SIGNED_DOTAPP_DIR }}/notarization-submit-output.txt
