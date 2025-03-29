@@ -1,4 +1,4 @@
-name: Test Mac Build
+name: Test Build
 
 on:
   push:
@@ -24,11 +24,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm config set //github.com/:_authToken=${{ github.token }}
-          npm config set //api.github.com/:_authToken=${{ github.token }}
-          npm config set //npm.pkg.github.com/:_authToken=${{ github.token }}
-          npm config set @microsoft:registry https://npm.pkg.github.com
-          npm config set @vscode:registry https://npm.pkg.github.com
           npm config set fetch-timeout 300000
           npm config set fetch-retry-mintimeout 20000
           npm config set fetch-retry-maxtimeout 120000
@@ -37,6 +32,7 @@ jobs:
 
       - name: Build App
         run: |
+          sudo npm run buildreact
           sudo npm run gulp vscode-darwin-${{ matrix.arch }}-min
 
       - name: Setup Working Directories
@@ -50,7 +46,7 @@ jobs:
           echo "KEYCHAIN_DIR=${KEYCHAIN_DIR}" >> $GITHUB_ENV
           echo "SIGN_DIR=${SIGN_DIR}" >> $GITHUB_ENV
           echo "SIGNED_DOTAPP_DIR=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "SIGNED_DOTAPP=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}/Code - OSS.app" >> $GITHUB_ENV
+          echo "SIGNED_DOTAPP=${SIGN_DIR}/VSCode-darwin-${{ matrix.arch }}/Pubinfo - IDE.app" >> $GITHUB_ENV
 
       - name: Import Certificate
         env:
@@ -77,7 +73,7 @@ jobs:
           cd $(pwd)/build/darwin
           node sign.js "${SIGN_DIR}"
           codesign --verify --deep --strict --verbose=4 "${SIGNED_DOTAPP}"
-          spctl --assess --type execute --verbose=4 "${SIGNED_DOTAPP}" || echo "✅ Not yet notarized, skipping spctl error"
+          spctl --assess --type execute --verbose=4 "${SIGNED_DOTAPP}" || echo "⚠️ Not yet notarized"
 
       - name: Create DMG
         run: |
@@ -103,7 +99,6 @@ jobs:
 
           echo "🔍 Submitting to Apple notarization service..."
 
-          # 提交公证，并捕获输出
           SUBMIT_RESULT=$(mktemp)
           xcrun notarytool submit "${SIGNED_DMG}" \
             --keychain-profile "Pubinfo" \
@@ -114,30 +109,27 @@ jobs:
               exit 1
             }
 
-          # 打印返回内容
           echo "✅ Notarization submission result:"
           cat "$SUBMIT_RESULT"
 
-          # 提取 Submission ID
-          SUBMISSION_ID=$(grep -E '"id" *:' "$SUBMIT_RESULT" | head -n1 | sed -E 's/[^"]*"id": ?"([^"]+)".*/\1/')
+          # 提取 Submission ID（兼容文本格式）
+          SUBMISSION_ID=$(grep -E 'Submission ID received|  id:' "$SUBMIT_RESULT" | grep -Eo '[0-9a-fA-F-]{36}' | head -n1)
 
           if [ -z "$SUBMISSION_ID" ]; then
             echo "❌ Failed to extract submission ID."
+            cat "$SUBMIT_RESULT"
             exit 1
           fi
 
           echo "📦 Submission ID: $SUBMISSION_ID"
 
-          # 保存为文件用于上传
-          cp "$SUBMIT_RESULT" "${SIGNED_DOTAPP_DIR}/notarization-submit-output.json"
+          cp "$SUBMIT_RESULT" "${SIGNED_DOTAPP_DIR}/notarization-submit-output.txt"
 
-          # 拉取日志
           xcrun notarytool log "$SUBMISSION_ID" \
             --keychain-profile "Pubinfo" \
             --keychain "${KEYCHAIN}" \
             --output "${SIGNED_DOTAPP_DIR}/notarization-log.json"
 
-          # Staple 票据
           xcrun stapler staple "${SIGNED_DMG}" || echo "⚠️ Staple failed — likely rejected"
 
       - name: Create ZIP App Archive
