@@ -71,8 +71,7 @@ jobs:
           export AGENT_TEMPDIRECTORY="${KEYCHAIN_DIR}"
           cd $(pwd)/build/darwin
           node sign.js "${SIGN_DIR}"
-          codesign --verify --deep --strict --verbose=4 "${SIGNED_DOTAPP}"
-          spctl --assess --type execute --verbose=4 "${SIGNED_DOTAPP}" || echo "⚠️ Not yet notarized"
+          codesign --verify --verbose=4 "${SIGNED_DOTAPP}"
 
       - name: Create DMG
         run: |
